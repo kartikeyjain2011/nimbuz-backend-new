@@ -1,6 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { PlanId } from '@prisma/client';
 import { PLANS, tier } from '../common/plans';
 import { GamesService } from '../games/games.service';
+import { StreamTokenService } from '../infra/stream-token.service';
+import { VmPoolService } from '../infra/vm-pool.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StatsService } from '../stats/stats.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
@@ -11,7 +14,10 @@ const READY_TTL_MS = 2 * 60_000;
 
 @Injectable()
 export class SessionsService {
+  private readonly log = new Logger(SessionsService.name);
   constructor(
+    private readonly pool: VmPoolService,
+    private readonly tokens: StreamTokenService,
     private readonly prisma: PrismaService,
     private readonly games: GamesService,
     private readonly subs: SubscriptionsService,
@@ -48,9 +54,12 @@ export class SessionsService {
   private async advance(regionId: string) {
     await this.prisma.queueEntry.updateMany({ where: { regionId, status: 'ready', readyAt: { lt: new Date(Date.now() - READY_TTL_MS) } }, data: { status: 'expired' } });
     const region = await this.prisma.region.findUniqueOrThrow({ where: { id: regionId } });
-    const busy = await this.prisma.playSession.count({ where: { regionId, status: { in: ['starting', 'running'] } } });
     const ready = await this.prisma.queueEntry.count({ where: { regionId, status: 'ready' } });
-    const free = region.capacity - busy - ready;
+    const poolFree = await this.pool.freeFor(regionId, 'basic').catch(() => null);
+    const free =
+      poolFree !== null
+        ? poolFree - ready // real VMs: stopped, unleased rigs in this region
+        : region.capacity - ready - (await this.prisma.playSession.count({ where: { regionId, status: { in: ['starting', 'running'] } } }));
     if (free <= 0) return;
     const next = await this.prisma.queueEntry.findMany({ where: { regionId, status: 'waiting' }, orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }], take: free });
     if (next.length) await this.prisma.queueEntry.updateMany({ where: { id: { in: next.map((e) => e.id) } }, data: { status: 'ready', readyAt: new Date() } });
@@ -103,12 +112,41 @@ export class SessionsService {
           launcher: opts.launcher,
           resolution: opts.resolution ?? caps.maxResolution,
           fps: Math.min(opts.fps ?? caps.maxFps, caps.maxFps),
-          status: 'running',
+          status: this.pool.enabled ? 'starting' : 'running',
           deviceId: device?.id,
         },
       }),
     ]);
-    return session;
+    if (session.status === 'starting') void this.boot(session.id, entry.regionId, entry.plan, userId);
+    return this.get(userId, session.id);
+  }
+
+  /** Lease + boot a pool VM in the background; the client polls GET /sessions/:id. */
+  private async boot(sessionId: string, regionId: string, plan: PlanId, userId: string) {
+    try {
+      const vm = await this.pool.acquire(regionId, plan, sessionId, userId);
+      await this.prisma.playSession.update({
+        where: { id: sessionId },
+        data: { status: 'running', vmName: vm.name, vmIp: vm.ip, vmNode: vm.node, streamUrl: this.tokens.url({ ip: vm.ip, vm: vm.name, region: regionId }) },
+      });
+    } catch (e) {
+      this.log.error(`boot ${sessionId} failed: ${(e as Error).message}`);
+      await this.prisma.playSession.update({ where: { id: sessionId }, data: { status: 'failed', failReason: (e as Error).message, endedAt: new Date() } });
+    }
+  }
+
+  /** Session state; while running, includes a fresh short-lived token for the streaming agent. */
+  async get(userId: string, id: string) {
+    const s = await this.prisma.playSession.findUnique({ where: { id }, include: { game: { select: { slug: true, title: true, backdrop: true } }, region: true } });
+    if (!s || s.userId !== userId) throw new NotFoundException('Session not found');
+    const stream =
+      s.status === 'running'
+        ? {
+            url: s.streamUrl,
+            token: this.tokens.issue({ sid: s.id, uid: userId, vm: s.vmName ?? 'local', res: s.resolution ?? PLANS[s.plan].maxResolution, fps: s.fps ?? PLANS[s.plan].maxFps }),
+          }
+        : null;
+    return { ...s, stream };
   }
 
   async end(userId: string, id: string) {
@@ -119,6 +157,7 @@ export class SessionsService {
     const endedAt = new Date();
     const minutes = Math.max(1, Math.round((endedAt.getTime() - session.startedAt.getTime()) / 60_000));
     const ended = await this.prisma.playSession.update({ where: { id }, data: { status: 'ended', endedAt } });
+    if (session.vmName) await this.pool.release(session.vmName).catch((e) => this.log.error(`release ${session.vmName} failed: ${(e as Error).message}`));
 
     await this.prisma.libraryItem.upsert({
       where: { userId_gameSlug: { userId, gameSlug: session.gameSlug } },

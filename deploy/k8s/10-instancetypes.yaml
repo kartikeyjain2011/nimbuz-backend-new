@@ -1,0 +1,49 @@
+# One cluster instancetype per Nimbus plan. Pool VMs reference these by name (nimbus-<tier>).
+# Adjust deviceName to match your GPU resource names (kubectl get nodes -o json | jq '.items[].status.allocatable').
+apiVersion: instancetype.kubevirt.io/v1beta1
+kind: VirtualMachineClusterInstancetype
+metadata:
+  name: nimbus-basic
+  labels: { nimbus.io/tier: basic }
+spec:
+  cpu: { guest: 6, dedicatedCPUPlacement: true }
+  memory: { guest: 16Gi, hugepages: { pageSize: 1Gi } }
+  gpus:
+    - name: gpu1
+      deviceName: nvidia.com/RTX_3060 # 1080p60
+---
+apiVersion: instancetype.kubevirt.io/v1beta1
+kind: VirtualMachineClusterInstancetype
+metadata:
+  name: nimbus-pro
+  labels: { nimbus.io/tier: pro }
+spec:
+  cpu: { guest: 8, dedicatedCPUPlacement: true }
+  memory: { guest: 24Gi, hugepages: { pageSize: 1Gi } }
+  gpus:
+    - name: gpu1
+      deviceName: nvidia.com/RTX_4070_Ti # 1440p120, ray tracing
+---
+apiVersion: instancetype.kubevirt.io/v1beta1
+kind: VirtualMachineClusterInstancetype
+metadata:
+  name: nimbus-premium
+  labels: { nimbus.io/tier: premium }
+spec:
+  cpu: { guest: 12, dedicatedCPUPlacement: true }
+  memory: { guest: 32Gi, hugepages: { pageSize: 1Gi } }
+  gpus:
+    - name: gpu1
+      deviceName: nvidia.com/RTX_4090 # 4K120, path tracing
+---
+apiVersion: instancetype.kubevirt.io/v1beta1
+kind: VirtualMachineClusterInstancetype
+metadata:
+  name: nimbus-ultimate
+  labels: { nimbus.io/tier: ultimate }
+spec:
+  cpu: { guest: 16, dedicatedCPUPlacement: true }
+  memory: { guest: 64Gi, hugepages: { pageSize: 1Gi } }
+  gpus:
+    - name: gpu1
+      deviceName: nvidia.com/RTX_4090 # 4K240, dedicated node

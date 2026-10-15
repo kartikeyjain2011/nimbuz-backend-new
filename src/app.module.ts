@@ -4,6 +4,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule, ClerkAuthGuard, Public } from './auth/auth';
 import { GamesModule } from './games/games.module';
+import { InfraModule } from './infra/infra.module';
 import { LibraryModule } from './library/library.module';
 import { PrismaModule, PrismaService } from './prisma/prisma.service';
 import { SessionsModule } from './sessions/sessions.module';
@@ -29,6 +30,7 @@ class HealthController {
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     PrismaModule,
     AuthModule,
+    InfraModule,
     UsersModule,
     GamesModule,
     LibraryModule,

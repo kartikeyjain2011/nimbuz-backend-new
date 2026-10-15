@@ -81,4 +81,40 @@ await fetch(`${API}/v1/library`, { headers: { Authorization: `Bearer ${await get
 | **Stats** | |
 | `GET /v1/stats` | Level/XP, hours, games played, streak week, achievements, badges, devices |
 
+## Cloud rigs (KubeVirt + NVMesh)
+
+Sessions run on real VMs from a **pre-warmed pool** managed through the Kubernetes API.
+
+```
+POST /v1/queue ─▶ ready ─▶ POST /v1/sessions ─▶ status "starting"
+                                   │  lease a stopped pool VM (tier ≥ plan, exact tier first)
+                                   │  start it, wait for the VMI IP (≤ 3 min)
+                                   ▼
+GET /v1/sessions/:id ─▶ status "running" + { stream: { url, token } }   ← browser connects to the agent
+POST /v1/sessions/:id/end ─▶ VM stopped and returned to the pool
+```
+
+- **Pool** — `VM_POOL` sets how many stopped VMs to keep per region/tier. A reconciler (every 60 s) creates missing ones and frees leases older than 12 h. `GET /v1/infra/pool` (admin) shows free/running per region & tier plus node GPUs.
+- **VMs** — labels `nimbus.io/pool=gaming`, `nimbus.io/region`, `nimbus.io/tier`; leased via the `nimbus.io/lease` annotation with optimistic concurrency, so two sessions can never grab the same VM.
+- **GPU** — each tier uses the `nimbus-<tier>` cluster instancetype (`deploy/k8s/10-instancetypes.yaml`): RTX 3060 → 4070 Ti → 4090.
+- **Storage (NVMesh)** — boot disk is a CDI clone of the golden image; the shared **game library** PVC is mounted read-only into every VM (`deploy/k8s/20-storage.yaml`).
+- Without `K8S_API_URL` the API runs in dev mode: sessions go straight to `running` with no VM.
+
+### One-time cluster setup
+
+```bash
+kubectl apply -f deploy/k8s/00-namespace-rbac.yaml
+kubectl apply -f deploy/k8s/10-instancetypes.yaml      # fix GPU deviceNames first
+kubectl apply -f deploy/k8s/20-storage.yaml            # fix storageClassName + golden image URL
+kubectl -n nimbus get secret nimbus-api-token -o jsonpath='{.data.token}' | base64 -d   # → K8S_TOKEN
+kubectl -n nimbus get secret nimbus-api-token -o jsonpath='{.data.ca\.crt}'            # → K8S_CA_B64
+```
+
+### Streaming agent contract (runs inside the golden image)
+
+1. Listen on `wss://0.0.0.0:8443/stream` (or sit behind the gateway in `STREAM_URL_TEMPLATE`).
+2. The browser connects with `?token=<stream.token>`. Token = `base64url(json).base64url(HMAC-SHA256(STREAM_TOKEN_SECRET, part1))`, claims `{ sid, uid, vm, res, fps, exp }`, valid 120 s.
+3. Verify offline with the shared secret, or call `POST /v1/infra/stream/verify { token }`.
+4. Cap encode to `res` / `fps`, then negotiate WebRTC over the socket.
+
 Plans mirror the website (`src/common/plans.ts`): the subscription is also written to Clerk `publicMetadata.subscription`, so the website's play-gate keeps working without an extra request.

@@ -72,6 +72,12 @@ export class SessionsController {
   recent(@CurrentUser() { userId }: AuthUser) {
     return this.sessions.recent(userId);
   }
+
+  /** Poll while status is "starting"; when "running" includes { stream: { url, token } } for the VM's agent. */
+  @Get('sessions/:id')
+  get(@CurrentUser() { userId }: AuthUser, @Param('id') id: string) {
+    return this.sessions.get(userId, id);
+  }
 }
 
 @Module({ imports: [StatsModule], controllers: [SessionsController], providers: [SessionsService] })

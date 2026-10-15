@@ -1,0 +1,85 @@
+# Namespace + least-privilege ServiceAccount the Nimbus API uses to manage the gaming VM pool.
+#   kubectl apply -f deploy/k8s/00-namespace-rbac.yaml
+#   kubectl -n nimbus get secret nimbus-api-token -o jsonpath='{.data.token}' | base64 -d   → K8S_TOKEN
+#   kubectl -n nimbus get secret nimbus-api-token -o jsonpath='{.data.ca\.crt}'            → K8S_CA_B64
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nimbus
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nimbus-api
+  namespace: nimbus
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nimbus-api-token
+  namespace: nimbus
+  annotations:
+    kubernetes.io/service-account.name: nimbus-api
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nimbus-vm-pool
+  namespace: nimbus
+rules:
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstances"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachines/start", "virtualmachines/stop", "virtualmachines/restart"]
+    verbs: ["update", "put"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes/source"]
+    verbs: ["create"] # clone from the golden image PVC
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nimbus-vm-pool
+  namespace: nimbus
+subjects:
+  - kind: ServiceAccount
+    name: nimbus-api
+    namespace: nimbus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nimbus-vm-pool
+---
+# Read-only node view for the admin capacity endpoint (GET /v1/infra/pool)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nimbus-node-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nimbus-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: nimbus-api
+    namespace: nimbus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nimbus-node-reader

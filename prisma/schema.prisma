@@ -185,6 +185,11 @@ model PlaySession {
   resolution String?
   fps        Int?
   status     SessionStatus @default(starting)
+  vmName     String? // KubeVirt VM leased from the pool
+  vmIp       String?
+  vmNode     String?
+  streamUrl  String?
+  failReason String?
   startedAt  DateTime      @default(now())
   endedAt    DateTime?
   deviceId   String?

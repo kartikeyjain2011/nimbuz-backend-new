@@ -1,0 +1,34 @@
+# NVMesh-backed volumes. Set storageClassName to your NVMesh CSI class (kubectl get storageclass).
+#
+# 1. Golden image: Windows + GPU drivers + launchers (Steam/Epic/GOG) + the Nimbus streaming agent.
+#    Every pool VM's boot disk is a CDI clone of this PVC (fast on NVMesh).
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: nimbus-golden-win11
+  namespace: nimbus
+spec:
+  source:
+    http:
+      url: "https://images.playnimbuz.com/nimbus-golden-win11.qcow2" # or registry: / upload via virtctl
+  storage:
+    storageClassName: nvmesh-raid10
+    accessModes: ["ReadWriteOnce"]
+    resources:
+      requests:
+        storage: 120Gi
+---
+# 2. Shared game library: installed games, mounted read-only into every VM as a second disk.
+#    Populate it once from a maintenance VM (mount read-write there), then mark read-only.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nimbus-game-library
+  namespace: nimbus
+spec:
+  storageClassName: nvmesh-raid10
+  accessModes: ["ReadOnlyMany"]
+  volumeMode: Block
+  resources:
+    requests:
+      storage: 8Ti
