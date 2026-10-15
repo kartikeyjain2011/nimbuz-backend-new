@@ -1,0 +1,249 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Users (mirrors Clerk; Clerk stays the source of truth for identity) ──────
+
+model User {
+  id          String   @id // Clerk user id (user_xxx)
+  email       String?  @unique
+  name        String?
+  username    String?
+  imageUrl    String?
+  phone       String?
+  dateOfBirth DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subscription Subscription?
+  library      LibraryItem[]
+  sessions     PlaySession[]
+  queue        QueueEntry[]
+  achievements UserAchievement[]
+  devices      Device[]
+  stats        UserStats?
+  payments     Payment[]
+}
+
+// ─── Billing ─────────────────────────────────────────────────────────────────
+
+enum PlanId {
+  basic
+  pro
+  premium
+  ultimate
+}
+
+model Subscription {
+  id                     String    @id @default(cuid())
+  userId                 String    @unique
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  razorpaySubscriptionId String    @unique
+  plan                   PlanId
+  months                 Int
+  status                 String // created | authenticated | active | pending | halted | cancelled | completed | expired
+  currentStart           DateTime?
+  currentEnd             DateTime?
+  pendingPlan            PlanId?
+  cancelAtEnd            Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+}
+
+model Payment {
+  id                     String   @id // razorpay payment id
+  userId                 String
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  razorpaySubscriptionId String?
+  amount                 Int // paise
+  currency               String   @default("INR")
+  status                 String
+  method                 String?
+  createdAt              DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// Every Razorpay webhook we receive, for idempotency and auditing.
+model WebhookEvent {
+  id         String   @id // x-razorpay-event-id
+  event      String
+  payload    Json
+  receivedAt DateTime @default(now())
+}
+
+// ─── Catalog ─────────────────────────────────────────────────────────────────
+
+model Game {
+  slug         String   @id
+  title        String
+  rawgId       Int?     @unique
+  steamAppId   Int?
+  requiredPlan PlanId   @default(basic)
+  poster       String?
+  backdrop     String?
+  logo         String?
+  trailer      String?
+  about        String?
+  genres       String[]
+  platforms    String[]
+  developers   String[]
+  publishers   String[]
+  rating       Float?
+  ratingsCount Int?
+  metacritic   Int?
+  releasedAt   DateTime?
+  esrb         String?
+  screenshots  String[]
+  featured     Boolean  @default(false)
+  syncedAt     DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  library      LibraryItem[]
+  sessions     PlaySession[]
+  queue        QueueEntry[]
+  achievements Achievement[]
+}
+
+model LibraryItem {
+  userId     String
+  gameSlug   String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game       Game     @relation(fields: [gameSlug], references: [slug], onDelete: Cascade)
+  favorite   Boolean  @default(false)
+  hidden     Boolean  @default(false)
+  addedAt    DateTime @default(now())
+  lastPlayed DateTime?
+  playtimeMinutes Int @default(0)
+  progress   Int      @default(0) // 0–100
+
+  @@id([userId, gameSlug])
+  @@index([userId, addedAt])
+}
+
+// ─── Cloud gaming ────────────────────────────────────────────────────────────
+
+model Region {
+  id        String  @id // e.g. "mumbai"
+  name      String
+  country   String
+  flag      String?
+  capacity  Int     @default(50)
+  online    Boolean @default(true)
+
+  sessions PlaySession[]
+  queue    QueueEntry[]
+}
+
+enum QueueStatus {
+  waiting
+  ready
+  started
+  cancelled
+  expired
+}
+
+model QueueEntry {
+  id        String      @id @default(cuid())
+  userId    String
+  gameSlug  String
+  regionId  String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game      Game        @relation(fields: [gameSlug], references: [slug])
+  region    Region      @relation(fields: [regionId], references: [id])
+  plan      PlanId
+  priority  Int // higher plans jump the queue
+  status    QueueStatus @default(waiting)
+  createdAt DateTime    @default(now())
+  readyAt   DateTime?
+
+  @@index([regionId, status, priority, createdAt])
+}
+
+enum SessionStatus {
+  starting
+  running
+  ended
+  failed
+}
+
+model PlaySession {
+  id         String        @id @default(cuid())
+  userId     String
+  gameSlug   String
+  regionId   String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game       Game          @relation(fields: [gameSlug], references: [slug])
+  region     Region        @relation(fields: [regionId], references: [id])
+  plan       PlanId
+  launcher   String? // Steam | GOG | Epic
+  resolution String?
+  fps        Int?
+  status     SessionStatus @default(starting)
+  startedAt  DateTime      @default(now())
+  endedAt    DateTime?
+  deviceId   String?
+  device     Device?       @relation(fields: [deviceId], references: [id])
+
+  @@index([userId, startedAt])
+}
+
+model Device {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  kind       String // desktop | phone | tablet | tv
+  userAgent  String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  sessions PlaySession[]
+
+  @@unique([userId, name])
+}
+
+// ─── Stats & achievements ────────────────────────────────────────────────────
+
+model UserStats {
+  userId          String    @id
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  xp              Int       @default(0)
+  level           Int       @default(1)
+  totalMinutes    Int       @default(0)
+  gamesPlayed     Int       @default(0)
+  currentStreak   Int       @default(0)
+  longestStreak   Int       @default(0)
+  lastPlayedDay   DateTime?
+  updatedAt       DateTime  @updatedAt
+}
+
+model Achievement {
+  id          String  @id // e.g. "first-steps"
+  title       String
+  description String
+  icon        String
+  tier        String // Bronze | Silver | Gold | Plat
+  goal        Int     @default(1)
+  xp          Int     @default(100)
+  gameSlug    String?
+  game        Game?   @relation(fields: [gameSlug], references: [slug])
+
+  users UserAchievement[]
+}
+
+model UserAchievement {
+  userId        String
+  achievementId String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  progress      Int         @default(0)
+  unlockedAt    DateTime?
+
+  @@id([userId, achievementId])
+}

@@ -1,0 +1,19 @@
+# dependencies
+/node_modules
+
+# build
+/dist
+*.tsbuildinfo
+
+# env — real keys live here, never commit
+.env
+.env.*
+!.env.example
+
+# logs / OS / editor
+*.log
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
+coverage
