@@ -127,7 +127,13 @@ export class SessionsService {
       const vm = await this.pool.acquire(regionId, plan, sessionId, userId);
       await this.prisma.playSession.update({
         where: { id: sessionId },
-        data: { status: 'running', vmName: vm.name, vmIp: vm.ip, vmNode: vm.node, streamUrl: this.tokens.url({ ip: vm.ip, vm: vm.name, region: regionId }) },
+        data: {
+          status: 'running',
+          vmName: vm.name,
+          vmIp: vm.publicIp ?? vm.ip,
+          vmNode: vm.node,
+          streamUrl: this.tokens.directUrl({ ip: vm.ip, publicIp: vm.publicIp, vm: vm.name, region: regionId }),
+        },
       });
     } catch (e) {
       this.log.error(`boot ${sessionId} failed: ${(e as Error).message}`);
@@ -142,7 +148,10 @@ export class SessionsService {
     const stream =
       s.status === 'running'
         ? {
+            // direct-to-VM agent (null until the VM has a nimbus.io/public-ip annotation)
             url: s.streamUrl,
+            // shared signaling server — always available
+            signalingUrl: this.tokens.signalingUrl({ ip: s.vmIp ?? '', vm: s.vmName ?? 'local', region: s.regionId }),
             token: this.tokens.issue({ sid: s.id, uid: userId, vm: s.vmName ?? 'local', res: s.resolution ?? PLANS[s.plan].maxResolution, fps: s.fps ?? PLANS[s.plan].maxFps }),
           }
         : null;

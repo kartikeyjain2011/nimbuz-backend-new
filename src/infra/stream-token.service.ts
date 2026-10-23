@@ -11,11 +11,14 @@ export type StreamClaims = {
   exp: number; // unix seconds
 };
 
+export type StreamVars = { vm: string; region: string; ip: string; publicIp?: string };
+
 const b64url = (b: Buffer | string) => Buffer.from(b).toString('base64url');
 
 /**
- * Short-lived HMAC token the browser hands to the streaming agent on the VM.
- * The agent verifies it with the same STREAM_TOKEN_SECRET (format: base64url(json).base64url(hmac)).
+ * Short-lived HMAC ticket the browser hands to the streaming agent / signaling server.
+ * STREAM_TOKEN_SECRET must be the same "stream ticket secret" the agent reads from the vault.
+ * Format: base64url(json).base64url(hmac-sha256(secret, part1)).
  */
 @Injectable()
 export class StreamTokenService {
@@ -40,9 +43,30 @@ export class StreamTokenService {
     return claims.exp > Date.now() / 1000 ? claims : null;
   }
 
-  /** wss URL for the agent. STREAM_URL_TEMPLATE supports {ip} {vm} {region}, e.g. wss://stream.playnimbuz.com/{vm} behind a gateway. */
-  url(vars: { ip: string; vm: string; region: string }) {
-    const tpl = this.config.get<string>('STREAM_URL_TEMPLATE') ?? 'wss://{ip}:8443/stream';
-    return tpl.replace('{ip}', vars.ip).replace('{vm}', vars.vm).replace('{region}', vars.region);
+  /**
+   * Placeholders: {vm} {region} {ip} (pod IP) {public_ip} {dashed_ip} (public IP with dots → dashes).
+   * Direct-to-VM on this cluster: wss://ip-{dashed_ip}.stream.playnimbuz.com:8443/ws
+   */
+  private fill(tpl: string, v: StreamVars) {
+    const pub = v.publicIp ?? v.ip;
+    return tpl
+      .replaceAll('{vm}', v.vm)
+      .replaceAll('{region}', v.region)
+      .replaceAll('{ip}', v.ip)
+      .replaceAll('{public_ip}', pub)
+      .replaceAll('{dashed_ip}', pub.replaceAll('.', '-'));
+  }
+
+  /** Direct agent URL (needs the VM's public IP for {dashed_ip}). Null if the template needs a public IP we don't have. */
+  directUrl(v: StreamVars) {
+    const tpl = this.config.get<string>('STREAM_DIRECT_URL_TEMPLATE') ?? 'wss://ip-{dashed_ip}.stream.playnimbuz.com:8443/ws';
+    if (/\{(dashed_ip|public_ip)\}/.test(tpl) && !v.publicIp) return null;
+    return this.fill(tpl, v);
+  }
+
+  /** Shared signaling server (live: wss://signal.playnimbuz.com). */
+  signalingUrl(v: StreamVars) {
+    const tpl = this.config.get<string>('STREAM_SIGNALING_URL') ?? 'wss://signal.playnimbuz.com';
+    return this.fill(tpl, v);
   }
 }

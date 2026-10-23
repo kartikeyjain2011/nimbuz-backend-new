@@ -2,11 +2,11 @@ import { Body, Controller, ForbiddenException, Get, Global, Module, Post } from 
 import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PlanId } from '@prisma/client';
-import { IsEnum, IsString } from 'class-validator';
+import { IsEnum, IsIP, IsOptional, IsString } from 'class-validator';
 import { CurrentUser, Public, type AuthUser } from '../auth/auth';
 import { KubeService } from './kube.service';
 import { StreamTokenService } from './stream-token.service';
-import { ANN, LABEL, VmPoolService } from './vm-pool.service';
+import { ANN, LABEL, PUBLIC_IP_ANNOTATION, VmPoolService } from './vm-pool.service';
 
 class VerifyTokenDto {
   @IsString() token!: string;
@@ -20,6 +20,8 @@ class AdoptDto {
   @IsString() name!: string;
   @IsString() region!: string;
   @IsEnum(PlanId) tier!: PlanId;
+  /** Public IP the VM's agent is reachable on → wss://ip-<dashed>.stream.playnimbuz.com:8443/ws */
+  @IsOptional() @IsIP() publicIp?: string;
 }
 
 @ApiTags('infra')
@@ -71,6 +73,7 @@ export class InfraController {
         inPool: vm.metadata.labels?.[LABEL.pool] === 'gaming',
         region: vm.metadata.labels?.[LABEL.region],
         tier: vm.metadata.labels?.[LABEL.tier],
+        publicIp: vm.metadata.annotations?.[PUBLIC_IP_ANNOTATION],
         leasedBy: vm.metadata.annotations?.[ANN.user],
         instancetype: vm.spec.instancetype?.name,
         volumes: spec?.spec?.volumes?.map((v) => v.persistentVolumeClaim?.claimName ?? v.dataVolume?.name ?? v.name),
@@ -82,7 +85,7 @@ export class InfraController {
   @Post('pool/adopt')
   adopt(@CurrentUser() { userId }: AuthUser, @Body() dto: AdoptDto) {
     this.admin(userId);
-    return this.pool.adopt(dto.name, dto.region, dto.tier);
+    return this.pool.adopt(dto.name, dto.region, dto.tier, dto.publicIp);
   }
 
   /** Admin: take a VM out of the pool. */

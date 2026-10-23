@@ -19,7 +19,10 @@ export const ANN = {
 /** { "mumbai": { "basic": 4, "pro": 2, "premium": 1, "ultimate": 1 } } */
 type PoolConfig = Record<string, Partial<Record<PlanId, number>>>;
 
-export type LeasedVm = { name: string; ip: string; node?: string; tier: PlanId };
+export type LeasedVm = { name: string; ip: string; publicIp?: string; node?: string; tier: PlanId };
+
+/** Set on each VM once: the public IP its agent is reachable on (KubeVirt only reports the pod IP). */
+export const PUBLIC_IP_ANNOTATION = 'nimbus.io/public-ip';
 
 const BOOT_TIMEOUT_MS = 3 * 60_000;
 const STALE_LEASE_MS = 12 * 60 * 60_000;
@@ -85,7 +88,7 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
         await this.kube.start(vm.metadata.name);
         const booted = await this.waitForIp(vm.metadata.name);
         void this.reconcile();
-        return { name: vm.metadata.name, tier: t, ...booted };
+        return { name: vm.metadata.name, tier: t, publicIp: vm.metadata.annotations?.[PUBLIC_IP_ANNOTATION], ...booted };
       } catch (e) {
         this.log.error(`VM ${vm.metadata.name} failed to boot: ${(e as Error).message}`);
         await this.release(vm.metadata.name).catch(() => {});
@@ -180,9 +183,14 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
    * Add an existing VM (created in kubevirt-manager, NVMesh disks with games installed) to the pool
    * by labelling it. Its disks are left untouched.
    */
-  async adopt(name: string, region: string, tier: PlanId) {
+  async adopt(name: string, region: string, tier: PlanId, publicIp?: string) {
     if (this.protectedVms.has(name)) throw new ServiceUnavailableException(`${name} is protected (POOL_PROTECTED_VMS) and can't join the pool`);
-    await this.kube.patchVM(name, { metadata: { labels: { [LABEL.pool]: 'gaming', [LABEL.region]: region, [LABEL.tier]: tier } } });
+    await this.kube.patchVM(name, {
+      metadata: {
+        labels: { [LABEL.pool]: 'gaming', [LABEL.region]: region, [LABEL.tier]: tier },
+        ...(publicIp && { annotations: { [PUBLIC_IP_ANNOTATION]: publicIp } }),
+      },
+    });
     return this.kube.getVM(name);
   }
 

@@ -116,8 +116,10 @@ kubectl -n nimbus get secret nimbus-api-token -o jsonpath='{.data.ca\.crt}'     
 
 ### Streaming agent contract (runs inside the golden image)
 
-1. Listen on `wss://0.0.0.0:8443/stream` (or sit behind the gateway in `STREAM_URL_TEMPLATE`).
-2. The browser connects with `?token=<stream.token>`. Token = `base64url(json).base64url(HMAC-SHA256(STREAM_TOKEN_SECRET, part1))`, claims `{ sid, uid, vm, res, fps, exp }`, valid 120 s.
+1. `GET /v1/sessions/:id` (running) returns `stream: { url, signalingUrl, token }`:
+   - `url` — direct agent `wss://ip-<dashed-public-ip>.stream.playnimbuz.com:8443/ws` (needs the VM's `nimbus.io/public-ip` annotation; `null` otherwise)
+   - `signalingUrl` — shared `wss://signal.playnimbuz.com`
+2. The browser connects with `?token=<stream.token>`. Token = `base64url(json).base64url(HMAC-SHA256(STREAM_TOKEN_SECRET, part1))`, claims `{ sid, uid, vm, res, fps, exp }`, valid 120 s. `STREAM_TOKEN_SECRET` must be the vault's stream ticket secret — if the agent expects a different ticket format, adapt `src/infra/stream-token.service.ts`.
 3. Verify offline with the shared secret, or call `POST /v1/infra/stream/verify { token }`.
 4. Cap encode to `res` / `fps`, then negotiate WebRTC over the socket.
 
