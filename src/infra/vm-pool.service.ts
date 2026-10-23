@@ -66,7 +66,7 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
   async acquire(region: string, plan: PlanId, sessionId: string, userId: string): Promise<LeasedVm> {
     const vms = await this.kube.listVMs(`${LABEL.pool}=gaming,${LABEL.region}=${region}`);
     const candidates = vms
-      .filter((vm) => !vm.metadata.annotations?.[ANN.lease] && (vm.status?.printableStatus ?? 'Stopped') === 'Stopped')
+      .filter((vm) => !this.protectedVms.has(vm.metadata.name) && !vm.metadata.annotations?.[ANN.lease] && (vm.status?.printableStatus ?? 'Stopped') === 'Stopped')
       .map((vm) => ({ vm, t: vm.metadata.labels?.[LABEL.tier] as PlanId }))
       .filter(({ t }) => t && tierIndex(t) >= tierIndex(plan))
       .sort((a, b) => tierIndex(a.t) - tierIndex(b.t));
@@ -181,6 +181,7 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
    * by labelling it. Its disks are left untouched.
    */
   async adopt(name: string, region: string, tier: PlanId) {
+    if (this.protectedVms.has(name)) throw new ServiceUnavailableException(`${name} is protected (POOL_PROTECTED_VMS) and can't join the pool`);
     await this.kube.patchVM(name, { metadata: { labels: { [LABEL.pool]: 'gaming', [LABEL.region]: region, [LABEL.tier]: tier } } });
     return this.kube.getVM(name);
   }
@@ -190,43 +191,85 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
     await this.kube.patchVM(name, { metadata: { labels: { [LABEL.pool]: null, [LABEL.region]: null, [LABEL.tier]: null } } });
   }
 
+  /** VMs the pool must never touch (the golden/build VM that owns the RWO game library). */
+  get protectedVms() {
+    return new Set((this.config.get<string>('POOL_PROTECTED_VMS') ?? 'golden-windows-build').split(',').map((s) => s.trim()).filter(Boolean));
+  }
+
   /**
-   * Only used with VM_CREATE_MODE=clone: new VM whose NVMesh boot disk is a CDI clone of
-   * SOURCE_DISK_PVC (an existing NVMesh volume with Windows + games installed).
+   * Only used with VM_CREATE_MODE=clone. Boot disk = CDI clone of GOLDEN_IMAGE_PVC on NVMesh.
+   * Game library (np-game-library is Block + RWO, so it can't be shared as-is):
+   *   GAME_LIBRARY_MODE=clone  → each VM gets its own NVMesh clone of GAME_LIBRARY_PVC (from GAME_LIBRARY_NAMESPACE)
+   *   GAME_LIBRARY_MODE=shared → GAME_LIBRARY_PVC is an RWX/ROX copy in the VM namespace, attached read-only to every VM
+   *   GAME_LIBRARY_MODE=none   → games live on the boot disk
+   * The games disk keeps serial NIMBUSGAME so Windows maps it to the same drive letter as on the golden VM.
    */
   private template(region: string, tier: PlanId): VirtualMachine {
     const name = `nimbus-${region}-${tier}-${Math.random().toString(36).slice(2, 8)}`;
-    const storageClass = this.config.get('K8S_STORAGE_CLASS') ?? 'nvmesh-raid10';
+    const ns = this.kube.namespace;
+    const bootClass = this.config.get('K8S_STORAGE_CLASS') ?? 'nvmesh-raid10';
     const source = this.config.get<string>('GOLDEN_IMAGE_PVC') || this.config.getOrThrow<string>('SOURCE_DISK_PVC');
-    const library = this.config.get<string>('GAME_LIBRARY_PVC');
     const bootSize = this.config.get('BOOT_DISK_SIZE') ?? '500Gi';
+
+    const libMode = (this.config.get<string>('GAME_LIBRARY_MODE') ?? 'none') as 'clone' | 'shared' | 'none';
+    const library = this.config.get<string>('GAME_LIBRARY_PVC');
+    const libNs = this.config.get<string>('GAME_LIBRARY_NAMESPACE') ?? ns;
+    const libClass = this.config.get<string>('GAME_LIBRARY_STORAGE_CLASS') ?? 'nvmesh-golden-retain';
+    const libSize = this.config.get<string>('GAME_LIBRARY_SIZE') ?? '7451Gi';
+    const libSerial = this.config.get<string>('GAME_LIBRARY_SERIAL') ?? 'NIMBUSGAME';
+    const withLib = libMode !== 'none' && !!library;
+
+    let nodeSelector: Record<string, string> | undefined;
+    try {
+      const raw = this.config.get<string>('VM_NODE_SELECTOR');
+      nodeSelector = raw ? (JSON.parse(raw.replace('{region}', region)) as Record<string, string>) : undefined;
+    } catch {
+      nodeSelector = undefined;
+    }
+
+    const dataVolumeTemplates: unknown[] = [
+      {
+        metadata: { name: `${name}-boot` },
+        spec: {
+          source: { pvc: { namespace: ns, name: source } },
+          storage: { storageClassName: bootClass, accessModes: ['ReadWriteOnce'], resources: { requests: { storage: bootSize } } },
+        },
+      },
+    ];
+    if (withLib && libMode === 'clone') {
+      dataVolumeTemplates.push({
+        metadata: { name: `${name}-games` },
+        spec: {
+          source: { pvc: { namespace: libNs, name: library } },
+          storage: { storageClassName: libClass, accessModes: ['ReadWriteOnce'], volumeMode: 'Block', resources: { requests: { storage: libSize } } },
+        },
+      });
+    }
+
+    const gamesVolume =
+      libMode === 'clone' ? { name: 'games', dataVolume: { name: `${name}-games` } } : { name: 'games', persistentVolumeClaim: { claimName: library!, readOnly: true } };
 
     return {
       metadata: { name, labels: { [LABEL.pool]: 'gaming', [LABEL.region]: region, [LABEL.tier]: tier } },
       spec: {
         runStrategy: 'Halted',
         instancetype: { kind: 'VirtualMachineClusterInstancetype', name: `nimbus-${tier}` },
-        dataVolumeTemplates: [
-          {
-            metadata: { name: `${name}-boot` },
-            spec: {
-              source: { pvc: { namespace: this.kube.namespace, name: source } },
-              storage: { storageClassName: storageClass, accessModes: ['ReadWriteOnce'], resources: { requests: { storage: bootSize } } },
-            },
-          },
-        ],
+        dataVolumeTemplates,
         template: {
           metadata: { labels: { [LABEL.pool]: 'gaming', [LABEL.region]: region, [LABEL.tier]: tier } },
           spec: {
-            nodeSelector: { 'topology.kubernetes.io/region': region },
+            ...(nodeSelector && { nodeSelector }),
             domain: {
               devices: {
-                disks: [{ name: 'boot', bootOrder: 1, disk: { bus: 'virtio' } }, ...(library ? [{ name: 'games', disk: { bus: 'virtio', readonly: true } }] : [])],
+                disks: [
+                  { name: 'boot', bootOrder: 1, disk: { bus: 'virtio' } },
+                  ...(withLib ? [{ name: 'games', serial: libSerial, disk: { bus: 'virtio', ...(libMode === 'shared' && { readonly: true }) } }] : []),
+                ],
                 interfaces: [{ name: 'default', masquerade: {} }],
               },
             },
             networks: [{ name: 'default', pod: {} }],
-            volumes: [{ name: 'boot', dataVolume: { name: `${name}-boot` } }, ...(library ? [{ name: 'games', persistentVolumeClaim: { claimName: library, readOnly: true } }] : [])],
+            volumes: [{ name: 'boot', dataVolume: { name: `${name}-boot` } }, ...(withLib ? [gamesVolume] : [])],
           },
         },
       },

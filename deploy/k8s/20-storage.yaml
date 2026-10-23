@@ -1,15 +1,30 @@
-# Storage is NVMesh. Nothing to apply here in the default "adopt" mode:
-# your existing VMs already boot from NVMesh volumes with the games installed,
-# and the API only labels, starts and stops them.
+# NVMesh storage — current cluster layout (namespace "gaming"):
 #
-# Optional — VM_CREATE_MODE=clone (let the API create extra pool VMs automatically):
-# each new VM's boot disk is a CDI clone of SOURCE_DISK_PVC, one of your existing NVMesh
-# volumes with Windows + games installed. Clone a *stopped* VM's disk so it's consistent.
+#   gaming/np-game-library   7451Gi · Block · RWO · StorageClass nvmesh-golden-retain · VPG DEFAULT_RAID_10_VPG
+#                            attached to VM golden-windows-build as a virtio disk, serial NIMBUSGAME
+#   nvmesh-raid10            StorageClass for boot-disk clones
 #
-#   kubectl -n nimbus get pvc                       # find the disk to copy, e.g. win11-games-01
-#   SOURCE_DISK_PVC=win11-games-01
-#   K8S_STORAGE_CLASS=<your nvmesh class>           # kubectl get storageclass
-#   BOOT_DISK_SIZE=500Gi                            # ≥ the source volume size
+# Default mode (VM_CREATE_MODE=adopt): nothing to apply — existing VMs keep their NVMesh disks.
 #
-# If your VMs are in another namespace, set K8S_NAMESPACE to it and apply
-# deploy/k8s/00-namespace-rbac.yaml with that namespace instead of "nimbus".
+# Clone mode, once the golden boot image PVC is built (GOLDEN_IMAGE_PVC):
+#   GAME_LIBRARY_MODE=clone   each new pool VM gets its own CDI clone of np-game-library (RWO is fine).
+#                             Stop golden-windows-build first so the clone is consistent.
+#   GAME_LIBRARY_MODE=shared  make ONE read-many copy and attach it read-only to every VM
+#                             (NVMesh supports ReadWriteMany for Block volumes):
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: np-game-library-shared
+  namespace: gaming
+spec:
+  source:
+    pvc: { namespace: gaming, name: np-game-library }
+  storage:
+    storageClassName: nvmesh-golden-retain
+    accessModes: ["ReadWriteMany"]
+    volumeMode: Block
+    resources:
+      requests:
+        storage: 7451Gi
+# then: GAME_LIBRARY_MODE=shared, GAME_LIBRARY_PVC=np-game-library-shared
