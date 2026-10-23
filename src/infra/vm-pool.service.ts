@@ -152,6 +152,9 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      // Default "adopt" mode: the pool is your existing VMs (NVMesh disks with games installed) — never create any.
+      if (this.config.get('VM_CREATE_MODE') !== 'clone') return;
+
       for (const [region, tiers] of Object.entries(this.pool)) {
         for (const [t, want] of Object.entries(tiers) as [PlanId, number][]) {
           const have = vms.filter((vm) => vm.metadata.labels?.[LABEL.region] === region && vm.metadata.labels?.[LABEL.tier] === t).length;
@@ -170,15 +173,29 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Pool VM: boot disk cloned from the golden image onto NVMesh, the shared game library mounted
-   * read-only, GPU via the tier's instancetype (nimbus-basic … nimbus-ultimate, see deploy/k8s).
+   * Add an existing VM (created in kubevirt-manager, NVMesh disks with games installed) to the pool
+   * by labelling it. Its disks are left untouched.
+   */
+  async adopt(name: string, region: string, tier: PlanId) {
+    await this.kube.patchVM(name, { metadata: { labels: { [LABEL.pool]: 'gaming', [LABEL.region]: region, [LABEL.tier]: tier } } });
+    return this.kube.getVM(name);
+  }
+
+  /** Remove a VM from the pool (labels only; the VM and its NVMesh volumes stay). */
+  async unadopt(name: string) {
+    await this.kube.patchVM(name, { metadata: { labels: { [LABEL.pool]: null, [LABEL.region]: null, [LABEL.tier]: null } } });
+  }
+
+  /**
+   * Only used with VM_CREATE_MODE=clone: new VM whose NVMesh boot disk is a CDI clone of
+   * SOURCE_DISK_PVC (an existing NVMesh volume with Windows + games installed).
    */
   private template(region: string, tier: PlanId): VirtualMachine {
     const name = `nimbus-${region}-${tier}-${Math.random().toString(36).slice(2, 8)}`;
     const storageClass = this.config.get('K8S_STORAGE_CLASS') ?? 'nvmesh-raid10';
-    const golden = this.config.get('GOLDEN_IMAGE_PVC') ?? 'nimbus-golden-win11';
-    const library = this.config.get('GAME_LIBRARY_PVC') ?? 'nimbus-game-library';
-    const bootSize = this.config.get('BOOT_DISK_SIZE') ?? '120Gi';
+    const source = this.config.getOrThrow<string>('SOURCE_DISK_PVC');
+    const library = this.config.get<string>('GAME_LIBRARY_PVC');
+    const bootSize = this.config.get('BOOT_DISK_SIZE') ?? '500Gi';
 
     return {
       metadata: { name, labels: { [LABEL.pool]: 'gaming', [LABEL.region]: region, [LABEL.tier]: tier } },
@@ -189,7 +206,7 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
           {
             metadata: { name: `${name}-boot` },
             spec: {
-              source: { pvc: { namespace: this.kube.namespace, name: golden } },
+              source: { pvc: { namespace: this.kube.namespace, name: source } },
               storage: { storageClassName: storageClass, accessModes: ['ReadWriteOnce'], resources: { requests: { storage: bootSize } } },
             },
           },
@@ -200,18 +217,12 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
             nodeSelector: { 'topology.kubernetes.io/region': region },
             domain: {
               devices: {
-                disks: [
-                  { name: 'boot', bootOrder: 1, disk: { bus: 'virtio' } },
-                  { name: 'games', disk: { bus: 'virtio', readonly: true } },
-                ],
+                disks: [{ name: 'boot', bootOrder: 1, disk: { bus: 'virtio' } }, ...(library ? [{ name: 'games', disk: { bus: 'virtio', readonly: true } }] : [])],
                 interfaces: [{ name: 'default', masquerade: {} }],
               },
             },
             networks: [{ name: 'default', pod: {} }],
-            volumes: [
-              { name: 'boot', dataVolume: { name: `${name}-boot` } },
-              { name: 'games', persistentVolumeClaim: { claimName: library, readOnly: true } },
-            ],
+            volumes: [{ name: 'boot', dataVolume: { name: `${name}-boot` } }, ...(library ? [{ name: 'games', persistentVolumeClaim: { claimName: library, readOnly: true } }] : [])],
           },
         },
       },

@@ -60,7 +60,8 @@ export class KubeService {
   private vmPath = (name = '') => `/apis/kubevirt.io/v1/namespaces/${this.namespace}/virtualmachines${name && `/${name}`}`;
 
   listVMs(selector: string) {
-    return this.request<{ items: VirtualMachine[] }>(`${this.vmPath()}?labelSelector=${encodeURIComponent(selector)}`).then((r) => r.items);
+    const qs = selector ? `?labelSelector=${encodeURIComponent(selector)}` : '';
+    return this.request<{ items: VirtualMachine[] }>(`${this.vmPath()}${qs}`).then((r) => r.items);
   }
 
   getVM = (name: string) => this.request<VirtualMachine>(this.vmPath(name));

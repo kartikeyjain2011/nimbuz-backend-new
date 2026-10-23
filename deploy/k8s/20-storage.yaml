@@ -1,34 +1,15 @@
-# NVMesh-backed volumes. Set storageClassName to your NVMesh CSI class (kubectl get storageclass).
+# Storage is NVMesh. Nothing to apply here in the default "adopt" mode:
+# your existing VMs already boot from NVMesh volumes with the games installed,
+# and the API only labels, starts and stops them.
 #
-# 1. Golden image: Windows + GPU drivers + launchers (Steam/Epic/GOG) + the Nimbus streaming agent.
-#    Every pool VM's boot disk is a CDI clone of this PVC (fast on NVMesh).
-apiVersion: cdi.kubevirt.io/v1beta1
-kind: DataVolume
-metadata:
-  name: nimbus-golden-win11
-  namespace: nimbus
-spec:
-  source:
-    http:
-      url: "https://images.playnimbuz.com/nimbus-golden-win11.qcow2" # or registry: / upload via virtctl
-  storage:
-    storageClassName: nvmesh-raid10
-    accessModes: ["ReadWriteOnce"]
-    resources:
-      requests:
-        storage: 120Gi
----
-# 2. Shared game library: installed games, mounted read-only into every VM as a second disk.
-#    Populate it once from a maintenance VM (mount read-write there), then mark read-only.
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: nimbus-game-library
-  namespace: nimbus
-spec:
-  storageClassName: nvmesh-raid10
-  accessModes: ["ReadOnlyMany"]
-  volumeMode: Block
-  resources:
-    requests:
-      storage: 8Ti
+# Optional — VM_CREATE_MODE=clone (let the API create extra pool VMs automatically):
+# each new VM's boot disk is a CDI clone of SOURCE_DISK_PVC, one of your existing NVMesh
+# volumes with Windows + games installed. Clone a *stopped* VM's disk so it's consistent.
+#
+#   kubectl -n nimbus get pvc                       # find the disk to copy, e.g. win11-games-01
+#   SOURCE_DISK_PVC=win11-games-01
+#   K8S_STORAGE_CLASS=<your nvmesh class>           # kubectl get storageclass
+#   BOOT_DISK_SIZE=500Gi                            # ≥ the source volume size
+#
+# If your VMs are in another namespace, set K8S_NAMESPACE to it and apply
+# deploy/k8s/00-namespace-rbac.yaml with that namespace instead of "nimbus".
