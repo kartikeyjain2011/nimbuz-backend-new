@@ -154,6 +154,10 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
 
       // Default "adopt" mode: the pool is your existing VMs (NVMesh disks with games installed) — never create any.
       if (this.config.get('VM_CREATE_MODE') !== 'clone') return;
+      if (!this.config.get('GOLDEN_IMAGE_PVC') && !this.config.get('SOURCE_DISK_PVC')) {
+        this.log.warn('VM_CREATE_MODE=clone but no GOLDEN_IMAGE_PVC / SOURCE_DISK_PVC set — not creating VMs');
+        return;
+      }
 
       for (const [region, tiers] of Object.entries(this.pool)) {
         for (const [t, want] of Object.entries(tiers) as [PlanId, number][]) {
@@ -193,7 +197,7 @@ export class VmPoolService implements OnModuleInit, OnModuleDestroy {
   private template(region: string, tier: PlanId): VirtualMachine {
     const name = `nimbus-${region}-${tier}-${Math.random().toString(36).slice(2, 8)}`;
     const storageClass = this.config.get('K8S_STORAGE_CLASS') ?? 'nvmesh-raid10';
-    const source = this.config.getOrThrow<string>('SOURCE_DISK_PVC');
+    const source = this.config.get<string>('GOLDEN_IMAGE_PVC') || this.config.getOrThrow<string>('SOURCE_DISK_PVC');
     const library = this.config.get<string>('GAME_LIBRARY_PVC');
     const bootSize = this.config.get('BOOT_DISK_SIZE') ?? '500Gi';
 

@@ -94,18 +94,22 @@ GET /v1/sessions/:id ─▶ status "running" + { stream: { url, token } }   ← 
 POST /v1/sessions/:id/end ─▶ VM stopped and returned to the pool
 ```
 
-- **Pool** — `VM_POOL` sets how many stopped VMs to keep per region/tier. A reconciler (every 60 s) creates missing ones and frees leases older than 12 h. `GET /v1/infra/pool` (admin) shows free/running per region & tier plus node GPUs.
+- **Pool = your existing VMs** (default `VM_CREATE_MODE=adopt`). They already boot from NVMesh volumes with games installed; the API never creates, clones or modifies disks — it only labels, starts and stops them.
+  - `GET /v1/infra/vms` (admin) — every VM in the namespace with its NVMesh volumes
+  - `POST /v1/infra/pool/adopt { name, region, tier }` — add a VM to the pool · `POST /v1/infra/pool/remove { name }`
+  - Or label in kubevirt-manager / kubectl: `nimbus.io/pool=gaming`, `nimbus.io/region=mumbai`, `nimbus.io/tier=pro`
+  - Optional `VM_CREATE_MODE=clone`: auto-create VMs up to `VM_POOL` by cloning `SOURCE_DISK_PVC` (an existing NVMesh disk).
+- **Reconciler** (every 60 s) frees leases older than 12 h. `GET /v1/infra/pool` (admin) shows free/running per region & tier plus node GPUs.
 - **VMs** — labels `nimbus.io/pool=gaming`, `nimbus.io/region`, `nimbus.io/tier`; leased via the `nimbus.io/lease` annotation with optimistic concurrency, so two sessions can never grab the same VM.
-- **GPU** — each tier uses the `nimbus-<tier>` cluster instancetype (`deploy/k8s/10-instancetypes.yaml`): RTX 3060 → 4070 Ti → 4090.
-- **Storage (NVMesh)** — boot disk is a CDI clone of the golden image; the shared **game library** PVC is mounted read-only into every VM (`deploy/k8s/20-storage.yaml`).
+- **GPU** — the `tier` label decides which plans a VM serves (a Pro VM serves Basic + Pro users). For cloned VMs, `nimbus-<tier>` instancetypes in `deploy/k8s/10-instancetypes.yaml`.
+- **Storage (NVMesh)** — VMs keep their own NVMesh disks with games installed; nothing is mounted or copied.
 - Without `K8S_API_URL` the API runs in dev mode: sessions go straight to `running` with no VM.
 
 ### One-time cluster setup
 
 ```bash
-kubectl apply -f deploy/k8s/00-namespace-rbac.yaml
-kubectl apply -f deploy/k8s/10-instancetypes.yaml      # fix GPU deviceNames first
-kubectl apply -f deploy/k8s/20-storage.yaml            # fix storageClassName + golden image URL
+kubectl apply -f deploy/k8s/00-namespace-rbac.yaml     # use your VMs' namespace instead of "nimbus"
+# 10-instancetypes.yaml / 20-storage.yaml are only needed for VM_CREATE_MODE=clone
 kubectl -n nimbus get secret nimbus-api-token -o jsonpath='{.data.token}' | base64 -d   # → K8S_TOKEN
 kubectl -n nimbus get secret nimbus-api-token -o jsonpath='{.data.ca\.crt}'            # → K8S_CA_B64
 ```
