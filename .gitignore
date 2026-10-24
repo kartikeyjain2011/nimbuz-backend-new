@@ -17,3 +17,6 @@
 .vscode/*
 !.vscode/extensions.json
 coverage
+
+# local run logs
+*.log
