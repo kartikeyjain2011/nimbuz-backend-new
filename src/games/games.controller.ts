@@ -10,6 +10,8 @@ class ListQuery {
   @IsOptional() @IsString() search?: string;
   @IsOptional() @IsString() genre?: string;
   @IsOptional() @IsBooleanString() featured?: string;
+  /** true = only games installed on the NVMesh game library */
+  @IsOptional() @IsBooleanString() installed?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) take?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) skip?: number;
 }
@@ -27,7 +29,8 @@ export class GamesController {
   @Public()
   @Get()
   list(@Query() q: ListQuery) {
-    return this.games.list({ ...q, featured: q.featured === undefined ? undefined : q.featured === 'true' });
+    const bool = (v?: string) => (v === undefined ? undefined : v === 'true');
+    return this.games.list({ ...q, featured: bool(q.featured), installed: bool(q.installed) });
   }
 
   @Public()

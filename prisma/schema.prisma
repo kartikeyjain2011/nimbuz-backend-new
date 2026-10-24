@@ -68,6 +68,20 @@ model Payment {
   @@index([userId])
 }
 
+/// Each inventory report a rig sends (what's installed on the NVMesh game library).
+model InventoryReport {
+  id         String   @id @default(cuid())
+  vm         String
+  drive      String?
+  gameCount  Int
+  matched    Int
+  created    Int
+  payload    Json
+  receivedAt DateTime @default(now())
+
+  @@index([vm, receivedAt])
+}
+
 /// Every Razorpay webhook we receive, for idempotency and auditing.
 model WebhookEvent {
   id         String   @id // x-razorpay-event-id
@@ -101,6 +115,14 @@ model Game {
   screenshots  String[]
   featured     Boolean  @default(false)
   syncedAt     DateTime?
+
+  // Installed on the NVMesh game library (reported by the rig, see deploy/agent)
+  installed       Boolean   @default(false)
+  launcher        String? // steam | epic | gog
+  launcherId      String? // steam appid, epic AppName, gog productId
+  installDir      String?
+  installBytes    BigInt?
+  inventorySeenAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

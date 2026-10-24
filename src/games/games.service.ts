@@ -25,14 +25,15 @@ export class GamesService {
     private readonly config: ConfigService,
   ) {}
 
-  list(q: { search?: string; genre?: string; featured?: boolean; take?: number; skip?: number }) {
+  list(q: { search?: string; genre?: string; featured?: boolean; installed?: boolean; take?: number; skip?: number }) {
     const where: Prisma.GameWhereInput = {
+      ...(q.installed !== undefined && { installed: q.installed }),
       ...(q.search && { title: { contains: q.search, mode: 'insensitive' } }),
       ...(q.genre && { genres: { has: q.genre } }),
       ...(q.featured !== undefined && { featured: q.featured }),
     };
     return Promise.all([
-      this.prisma.game.findMany({ where, orderBy: [{ featured: 'desc' }, { rating: 'desc' }], take: q.take ?? 24, skip: q.skip ?? 0 }),
+      this.prisma.game.findMany({ where, orderBy: [{ installed: 'desc' }, { featured: 'desc' }, { rating: 'desc' }], take: q.take ?? 24, skip: q.skip ?? 0 }),
       this.prisma.game.count({ where }),
     ]).then(([items, total]) => ({ items, total }));
   }

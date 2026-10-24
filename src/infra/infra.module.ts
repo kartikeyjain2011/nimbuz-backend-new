@@ -1,4 +1,6 @@
-import { Body, Controller, ForbiddenException, Get, Global, Module, Post } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Global, Headers, HttpCode, Module, Post, Req, type RawBodyRequest } from '@nestjs/common';
+import type { Request } from 'express';
+import { InventoryService, type InventoryReportBody } from './inventory.service';
 import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PlanId } from '@prisma/client';
@@ -33,6 +35,7 @@ export class InfraController {
     private readonly pool: VmPoolService,
     private readonly tokens: StreamTokenService,
     private readonly config: ConfigService,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   private admin(userId: string) {
@@ -96,6 +99,25 @@ export class InfraController {
     return { ok: true };
   }
 
+  /**
+   * Rig → API: what's installed on the NVMesh game library (deploy/agent/report-inventory.ps1).
+   * Signed with header `X-Nimbus-Signature: sha256=<hex HMAC of raw body>` using INVENTORY_SECRET.
+   */
+  @Public()
+  @Post('inventory')
+  @HttpCode(200)
+  inventory(@Req() req: RawBodyRequest<Request>, @Headers('x-nimbus-signature') signature?: string) {
+    this.inventoryService.verify(req.rawBody, signature);
+    return this.inventoryService.ingest(req.body as InventoryReportBody);
+  }
+
+  /** Admin: last inventory reports. */
+  @Get('inventory')
+  reports(@CurrentUser() { userId }: AuthUser) {
+    this.admin(userId);
+    return this.inventoryService.latest();
+  }
+
   /** Lets the streaming agent validate a token server-side if it doesn't hold the secret. */
   @Public()
   @Post('stream/verify')
@@ -105,5 +127,5 @@ export class InfraController {
 }
 
 @Global()
-@Module({ controllers: [InfraController], providers: [KubeService, VmPoolService, StreamTokenService], exports: [KubeService, VmPoolService, StreamTokenService] })
+@Module({ controllers: [InfraController], providers: [KubeService, VmPoolService, StreamTokenService, InventoryService], exports: [KubeService, VmPoolService, StreamTokenService] })
 export class InfraModule {}

@@ -4,6 +4,11 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 
+// Prisma returns BigInt for installBytes; JSON can't serialise BigInt natively
+(BigInt.prototype as unknown as { toJSON: () => number }).toJSON = function (this: bigint) {
+  return Number(this);
+};
+
 async function bootstrap() {
   // rawBody is needed to verify Razorpay and Clerk webhook signatures
   const app = await NestFactory.create(AppModule, { rawBody: true });
