@@ -31,7 +31,7 @@ export class GamesService {
       ...(q.genre && { genres: { has: q.genre } }),
       ...(q.featured !== undefined && { featured: q.featured }),
     };
-    return this.prisma.$transaction([
+    return Promise.all([
       this.prisma.game.findMany({ where, orderBy: [{ featured: 'desc' }, { rating: 'desc' }], take: q.take ?? 24, skip: q.skip ?? 0 }),
       this.prisma.game.count({ where }),
     ]).then(([items, total]) => ({ items, total }));
