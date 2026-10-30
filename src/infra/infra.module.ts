@@ -122,7 +122,8 @@ export class InfraController {
   @Public()
   @Post('stream/verify')
   verify(@Body() dto: VerifyTokenDto) {
-    return { valid: !!this.tokens.verify(dto.token), claims: this.tokens.verify(dto.token) };
+    const claims = this.tokens.verify(dto.token);
+    return { valid: !!claims, claims };
   }
 }
 

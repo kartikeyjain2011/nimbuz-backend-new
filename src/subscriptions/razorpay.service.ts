@@ -32,7 +32,7 @@ export class RazorpayService {
 
   private async rz<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
     const auth = Buffer.from(`${this.keyId}:${this.config.getOrThrow<string>('RAZORPAY_KEY_SECRET')}`).toString('base64');
-    const res = await fetch(`${API}${path}`, { method, headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const res = await fetch(`${API}${path}`, { method, headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' }, ...(body !== undefined && { body: JSON.stringify(body) }) });
     const json = (await res.json().catch(() => ({}))) as { error?: { description?: string } };
     if (!res.ok) throw new BadGatewayException(json.error?.description ?? `Razorpay request failed (${res.status})`);
     return json as T;

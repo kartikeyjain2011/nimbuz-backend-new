@@ -41,6 +41,11 @@ export class ClerkAuthGuard implements CanActivate {
     private readonly config: ConfigService,
   ) {}
 
+  /** Only accept session tokens minted for our own site (Clerk's `azp` claim), not another app on the same instance. */
+  private get origins() {
+    return (this.config.get<string>('CORS_ORIGINS') ?? 'http://localhost:3000').split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
   async canActivate(ctx: ExecutionContext) {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [ctx.getHandler(), ctx.getClass()]);
     const req = ctx.switchToHttp().getRequest<Request & { auth?: AuthUser }>();
@@ -53,7 +58,7 @@ export class ClerkAuthGuard implements CanActivate {
     }
 
     try {
-      const claims = await verifyToken(token, { secretKey: this.config.getOrThrow('CLERK_SECRET_KEY') });
+      const claims = await verifyToken(token, { secretKey: this.config.getOrThrow('CLERK_SECRET_KEY'), authorizedParties: this.origins });
       req.auth = { userId: claims.sub, sessionId: claims.sid };
       return true;
     } catch {

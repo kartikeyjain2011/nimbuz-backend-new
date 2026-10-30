@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PlanId } from '@prisma/client';
 import { PLANS, tier } from '../common/plans';
 import { GamesService } from '../games/games.service';
@@ -11,10 +11,13 @@ import { UsersService } from '../users/users.service';
 
 const AVG_SESSION_MIN = 45;
 const READY_TTL_MS = 2 * 60_000;
+const BOOT_GIVE_UP_MS = 5 * 60_000;
+const MAX_SESSION_MS = Number(process.env.MAX_SESSION_HOURS ?? 8) * 60 * 60_000;
 
 @Injectable()
-export class SessionsService {
+export class SessionsService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(SessionsService.name);
+  private sweeper?: NodeJS.Timeout;
   constructor(
     private readonly pool: VmPoolService,
     private readonly tokens: StreamTokenService,
@@ -101,8 +104,11 @@ export class SessionsService {
         })
       : null;
 
-    const [, session] = await this.prisma.$transaction([
-      this.prisma.queueEntry.update({ where: { id: queueId }, data: { status: 'started' } }),
+    // claim the slot atomically so a double-click can't start two sessions (and lease two VMs)
+    const claimed = await this.prisma.queueEntry.updateMany({ where: { id: queueId, status: 'ready' }, data: { status: 'started' } });
+    if (!claimed.count) throw new BadRequestException('Queue entry was already started');
+
+    const [session] = await this.prisma.$transaction([
       this.prisma.playSession.create({
         data: {
           userId,
@@ -125,8 +131,8 @@ export class SessionsService {
   private async boot(sessionId: string, regionId: string, plan: PlanId, userId: string) {
     try {
       const vm = await this.pool.acquire(regionId, plan, sessionId, userId);
-      await this.prisma.playSession.update({
-        where: { id: sessionId },
+      const r = await this.prisma.playSession.updateMany({
+        where: { id: sessionId, status: 'starting' },
         data: {
           status: 'running',
           vmName: vm.name,
@@ -135,10 +141,38 @@ export class SessionsService {
           streamUrl: this.tokens.directUrl({ ip: vm.ip, publicIp: vm.publicIp, vm: vm.name, region: regionId }),
         },
       });
+      if (!r.count) {
+        // user left (or the sweeper gave up) while the VM was booting
+        this.log.warn(`session ${sessionId} ended during boot — releasing ${vm.name}`);
+        await this.pool.release(vm.name).catch((e) => this.log.error(`release ${vm.name} failed: ${(e as Error).message}`));
+      }
     } catch (e) {
       this.log.error(`boot ${sessionId} failed: ${(e as Error).message}`);
-      await this.prisma.playSession.update({ where: { id: sessionId }, data: { status: 'failed', failReason: (e as Error).message, endedAt: new Date() } });
+      await this.prisma.playSession.updateMany({ where: { id: sessionId, status: 'starting' }, data: { status: 'failed', failReason: (e as Error).message, endedAt: new Date() } });
     }
+  }
+
+  /** Fail sessions stuck booting and end sessions nobody closed (tab closed, network lost), so rigs return to the pool. */
+  private async sweep() {
+    try {
+      const stuck = await this.prisma.playSession.updateMany({
+        where: { status: 'starting', startedAt: { lt: new Date(Date.now() - BOOT_GIVE_UP_MS) } },
+        data: { status: 'failed', failReason: 'Timed out starting the rig', endedAt: new Date() },
+      });
+      if (stuck.count) this.log.warn(`failed ${stuck.count} sessions stuck starting`);
+      const stale = await this.prisma.playSession.findMany({ where: { status: 'running', startedAt: { lt: new Date(Date.now() - MAX_SESSION_MS) } }, select: { id: true, userId: true } });
+      for (const s of stale) await this.end(s.userId, s.id).catch((e) => this.log.error(`auto-end ${s.id}: ${(e as Error).message}`));
+    } catch (e) {
+      this.log.error(`sweep failed: ${(e as Error).message}`);
+    }
+  }
+
+  onModuleInit() {
+    this.sweeper = setInterval(() => void this.sweep(), 60_000);
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.sweeper);
   }
 
   /** Session state; while running, includes a fresh short-lived token for the streaming agent. */
@@ -161,12 +195,19 @@ export class SessionsService {
   async end(userId: string, id: string) {
     const session = await this.prisma.playSession.findUnique({ where: { id } });
     if (!session || session.userId !== userId) throw new NotFoundException('Session not found');
-    if (session.status === 'ended') return session;
+    if (session.status === 'ended' || session.status === 'failed') return session;
 
     const endedAt = new Date();
     const minutes = Math.max(1, Math.round((endedAt.getTime() - session.startedAt.getTime()) / 60_000));
-    const ended = await this.prisma.playSession.update({ where: { id }, data: { status: 'ended', endedAt } });
+    // conditional so two concurrent "end" calls don't both count playtime
+    const r = await this.prisma.playSession.updateMany({ where: { id, status: { in: ['starting', 'running'] } }, data: { status: 'ended', endedAt } });
+    const ended = await this.prisma.playSession.findUniqueOrThrow({ where: { id } });
+    if (!r.count) return ended;
     if (session.vmName) await this.pool.release(session.vmName).catch((e) => this.log.error(`release ${session.vmName} failed: ${(e as Error).message}`));
+    if (session.status === 'starting') {
+      await this.advance(session.regionId);
+      return { ...ended, minutes: 0 };
+    }
 
     await this.prisma.libraryItem.upsert({
       where: { userId_gameSlug: { userId, gameSlug: session.gameSlug } },

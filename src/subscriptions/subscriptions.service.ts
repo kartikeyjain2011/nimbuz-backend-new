@@ -110,10 +110,22 @@ export class SubscriptionsService {
 
   /** Razorpay webhooks: subscription.* lifecycle + payment.captured / failed. Idempotent by event id. */
   async handleWebhook(eventId: string, body: { event: string; payload: Record<string, { entity: Record<string, unknown> }> }) {
-    const seen = await this.prisma.webhookEvent.findUnique({ where: { id: eventId } });
-    if (seen) return { duplicate: true };
-    await this.prisma.webhookEvent.create({ data: { id: eventId, event: body.event, payload: body as unknown as Prisma.InputJsonValue } });
+    try {
+      await this.prisma.webhookEvent.create({ data: { id: eventId, event: body.event, payload: body as unknown as Prisma.InputJsonValue } });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') return { duplicate: true };
+      throw e;
+    }
+    try {
+      return await this.applyWebhook(body);
+    } catch (e) {
+      // forget the event so Razorpay's retry gets processed instead of being skipped as a duplicate
+      await this.prisma.webhookEvent.delete({ where: { id: eventId } }).catch(() => {});
+      throw e;
+    }
+  }
 
+  private async applyWebhook(body: { event: string; payload: Record<string, { entity: Record<string, unknown> }> }) {
     const remote = body.payload.subscription?.entity as RzSubscription | undefined;
     if (remote?.notes?.userId) {
       const userId = remote.notes.userId;

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, Body, Controller, Get, Global, Headers, HttpCode, Module, Post, Req, type RawBodyRequest } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PlanId } from '@prisma/client';
@@ -67,7 +68,8 @@ export class SubscriptionsController {
   @HttpCode(200)
   webhook(@Req() req: RawBodyRequest<Request>, @Headers('x-razorpay-signature') signature?: string, @Headers('x-razorpay-event-id') eventId?: string) {
     if (!req.rawBody || !signature || !this.razorpay.verifyWebhook(req.rawBody, signature)) throw new BadRequestException('Invalid signature');
-    return this.subs.handleWebhook(eventId ?? `${Date.now()}`, req.body);
+    const id = eventId ?? `sha256:${createHash('sha256').update(req.rawBody).digest('hex')}`;
+    return this.subs.handleWebhook(id, req.body);
   }
 }
 

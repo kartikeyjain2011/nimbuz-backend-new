@@ -39,8 +39,12 @@ export class StreamTokenService {
     const expected = createHmac('sha256', this.secret).update(body).digest();
     const given = Buffer.from(sig, 'base64url');
     if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
-    const claims = JSON.parse(Buffer.from(body, 'base64url').toString()) as StreamClaims;
-    return claims.exp > Date.now() / 1000 ? claims : null;
+    try {
+      const claims = JSON.parse(Buffer.from(body, 'base64url').toString()) as StreamClaims;
+      return claims.exp > Date.now() / 1000 ? claims : null;
+    } catch {
+      return null;
+    }
   }
 
   /**

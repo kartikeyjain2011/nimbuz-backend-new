@@ -30,7 +30,8 @@ export class GamesController {
   @Get()
   list(@Query() q: ListQuery) {
     const bool = (v?: string) => (v === undefined ? undefined : v === 'true');
-    return this.games.list({ ...q, featured: bool(q.featured), installed: bool(q.installed) });
+    const { search, genre, take, skip } = q;
+    return this.games.list({ search, genre, take, skip, featured: bool(q.featured), installed: bool(q.installed) });
   }
 
   @Public()
