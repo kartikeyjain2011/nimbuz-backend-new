@@ -42,8 +42,18 @@ export class SubscriptionsService {
     return this.prisma.subscription.findUnique({ where: { userId } });
   }
 
+  /** Active plan: our DB first, else what the website's checkout stored on the Clerk user. */
   async plan(userId: string): Promise<PlanId | null> {
-    return activePlan(await this.current(userId));
+    const own = activePlan(await this.current(userId));
+    if (own) return own;
+    try {
+      const user = await this.clerk.client.users.getUser(userId);
+      const s = user.publicMetadata.subscription as { plan?: PlanId; status?: string; currentEnd?: number } | undefined;
+      if (!s?.plan || !s.status) return null;
+      return activePlan({ plan: s.plan, status: s.status, currentEnd: s.currentEnd ? new Date(s.currentEnd * 1000) : null });
+    } catch {
+      return null;
+    }
   }
 
   async checkout(userId: string, plan: PlanId, months: number) {
